@@ -5,11 +5,13 @@ import {
   KeyRound,
   LogOut,
   MessageSquare,
+  Settings2,
   User,
 } from "lucide-react";
 import Link from "next/link";
 import type { Session } from "next-auth";
 import { signOut } from "next-auth/react";
+import { useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +22,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ByokSettingsModal } from "@/components/dialogs/byok-settings-modal";
 import { useV0ApiKeyModal } from "@/contexts/v0-api-key-modal-context";
 
 interface UserNavProps {
@@ -28,6 +31,7 @@ interface UserNavProps {
 
 export function UserNav({ session }: UserNavProps) {
   const { openKeyModal } = useV0ApiKeyModal();
+  const [byokSettingsOpen, setByokSettingsOpen] = useState(false);
   const initials =
     session?.user?.email?.split("@")[0]?.slice(0, 2)?.toUpperCase() || "U";
 
@@ -79,7 +83,16 @@ export function UserNav({ session }: UserNavProps) {
               className="cursor-pointer"
             >
               <KeyRound className="mr-2 h-4 w-4" />
-              <span>API Key</span>
+              <span>v0 API Key</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                setByokSettingsOpen(true);
+              }}
+              className="cursor-pointer"
+            >
+              <Settings2 className="mr-2 h-4 w-4" />
+              <span>AI Provider Keys</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
@@ -111,6 +124,11 @@ export function UserNav({ session }: UserNavProps) {
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
+
+      <ByokSettingsModal
+        open={byokSettingsOpen}
+        onOpenChange={setByokSettingsOpen}
+      />
     </DropdownMenu>
   );
 }

@@ -25,9 +25,11 @@ import {
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import { ChatModeToolbar } from "@/components/chat/chat-mode-toolbar";
 import { PreviewPanel } from "@/components/chat/preview-panel";
 import { AppHeader } from "@/components/shared/app-header";
 import { ResizableLayout } from "@/components/shared/resizable-layout";
+import { useByok } from "@/contexts/byok-context";
 import { useV0ApiKeyModal } from "@/contexts/v0-api-key-modal-context";
 import { V0_API_KEY_REQUIRED_CODE } from "@/lib/v0-key";
 import type { ChatData } from "@/types/chat";
@@ -56,6 +58,8 @@ export function HomeClient() {
   const { status } = useSession();
   const router = useRouter();
   const { openKeyModal, requireV0ApiKey } = useV0ApiKeyModal();
+  const { isDirectMode, selectedModel, getProviderForModel, hasKeyForModel } =
+    useByok();
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showChatInterface, setShowChatInterface] = useState(false);
@@ -216,9 +220,120 @@ export function HomeClient() {
     return requireV0ApiKey();
   };
 
+  const handleDirectModeSend = async (userMessage: string) => {
+    const provider = getProviderForModel(selectedModel);
+    if (!provider) {
+      setChatHistory((prev) => [
+        ...prev,
+        { type: "assistant", content: "Invalid model selected." },
+      ]);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/byok/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userMessage,
+          model: selectedModel,
+          apiKey: "__use_stored__",
+          provider,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        throw new Error(errData?.error || "Failed to get response");
+      }
+
+      if (!response.body) {
+        throw new Error("No response body");
+      }
+
+      // Stream the text response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+
+      setChatHistory((prev) => [
+        ...prev,
+        { type: "assistant", content: "", isStreaming: true },
+      ]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fullText += decoder.decode(value, { stream: true });
+        setChatHistory((prev) => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: fullText,
+            };
+          }
+          return updated;
+        });
+      }
+
+      // Finalize
+      setChatHistory((prev) => {
+        const updated = [...prev];
+        const lastIdx = updated.length - 1;
+        if (lastIdx >= 0 && updated[lastIdx].isStreaming) {
+          updated[lastIdx] = {
+            ...updated[lastIdx],
+            content: fullText,
+            isStreaming: false,
+            stream: undefined,
+          };
+        }
+        return updated;
+      });
+      setIsLoading(false);
+    } catch (error) {
+      console.error("Direct mode error:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "An error occurred";
+      setChatHistory((prev) => [
+        ...prev,
+        { type: "assistant", content: errorMessage },
+      ]);
+      setIsLoading(false);
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!message.trim() || isLoading) {
+      return;
+    }
+
+    // In direct mode, check if the provider key is configured
+    if (isDirectMode) {
+      if (status !== "authenticated") {
+        router.push("/login?callbackUrl=/");
+        return;
+      }
+      if (!hasKeyForModel(selectedModel)) {
+        setChatHistory([]);
+        setShowChatInterface(false);
+        // Show a message about needing an API key
+        return;
+      }
+
+      const userMessage = message.trim();
+      clearPromptFromStorage();
+      setMessage("");
+      setAttachments([]);
+      setShowChatInterface(true);
+      setChatHistory([{ type: "user", content: userMessage }]);
+      setIsLoading(true);
+
+      handleDirectModeSend(userMessage);
       return;
     }
 
@@ -396,7 +511,24 @@ export function HomeClient() {
 
   const handleChatSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!message.trim() || isLoading || !currentChatId) {
+    if (!message.trim() || isLoading) {
+      return;
+    }
+
+    // Direct mode follow-up
+    if (isDirectMode) {
+      const userMessage = message.trim();
+      setMessage("");
+      setIsLoading(true);
+      setChatHistory((prev) => [
+        ...prev,
+        { type: "user", content: userMessage },
+      ]);
+      handleDirectModeSend(userMessage);
+      return;
+    }
+
+    if (!currentChatId) {
       return;
     }
 
@@ -552,6 +684,11 @@ export function HomeClient() {
             <h2 className="mb-4 font-bold text-4xl text-gray-900 dark:text-white">
               What can we build together?
             </h2>
+          </div>
+
+          {/* Mode Toolbar */}
+          <div className="mx-auto mb-3 max-w-2xl">
+            <ChatModeToolbar disabled={isLoading} />
           </div>
 
           {/* Prompt Input */}

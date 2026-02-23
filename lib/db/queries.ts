@@ -182,6 +182,130 @@ export async function getUserV0ApiKey({
   });
 }
 
+// ─── BYOK Multi-Provider Key Management ───
+
+type ByokProvider = "openai" | "anthropic" | "google";
+
+const providerColumns = {
+  openai: {
+    encrypted: "openai_key_encrypted" as const,
+    iv: "openai_key_iv" as const,
+  },
+  anthropic: {
+    encrypted: "anthropic_key_encrypted" as const,
+    iv: "anthropic_key_iv" as const,
+  },
+  google: {
+    encrypted: "google_key_encrypted" as const,
+    iv: "google_key_iv" as const,
+  },
+} as const;
+
+/** Returns which BYOK provider keys are configured for a user. */
+export async function getUserByokKeys({
+  userId,
+}: {
+  userId: string;
+}): Promise<Record<ByokProvider, boolean>> {
+  try {
+    const [row] = await getDb()
+      .select({
+        openai_key_encrypted: users.openai_key_encrypted,
+        anthropic_key_encrypted: users.anthropic_key_encrypted,
+        google_key_encrypted: users.google_key_encrypted,
+      })
+      .from(users)
+      .where(eq(users.id, userId));
+
+    if (!row) {
+      return { openai: false, anthropic: false, google: false };
+    }
+
+    return {
+      openai: Boolean(row.openai_key_encrypted),
+      anthropic: Boolean(row.anthropic_key_encrypted),
+      google: Boolean(row.google_key_encrypted),
+    };
+  } catch (error) {
+    // If columns don't exist yet, return all false
+    if (error instanceof Error && error.message.includes("_key_encrypted")) {
+      return { openai: false, anthropic: false, google: false };
+    }
+    throw error;
+  }
+}
+
+/** Stores encrypted BYOK provider API key for a user. */
+export async function setUserByokKey({
+  userId,
+  provider,
+  apiKey,
+}: {
+  userId: string;
+  provider: ByokProvider;
+  apiKey: string;
+}): Promise<void> {
+  const cols = providerColumns[provider];
+  if (!cols) throw new Error(`Invalid provider: ${provider}`);
+
+  const { encrypted, iv } = encryptV0ApiKey(apiKey);
+
+  await getDb()
+    .update(users)
+    .set({
+      [cols.encrypted]: encrypted,
+      [cols.iv]: iv,
+    })
+    .where(eq(users.id, userId));
+}
+
+/** Clears a stored BYOK provider key for a user. */
+export async function clearUserByokKey({
+  userId,
+  provider,
+}: {
+  userId: string;
+  provider: ByokProvider;
+}): Promise<void> {
+  const cols = providerColumns[provider];
+  if (!cols) throw new Error(`Invalid provider: ${provider}`);
+
+  await getDb()
+    .update(users)
+    .set({
+      [cols.encrypted]: null,
+      [cols.iv]: null,
+    })
+    .where(eq(users.id, userId));
+}
+
+/** Decrypts and returns a stored BYOK provider key for a user. */
+export async function getUserByokKey({
+  userId,
+  provider,
+}: {
+  userId: string;
+  provider: ByokProvider;
+}): Promise<string | null> {
+  const cols = providerColumns[provider];
+  if (!cols) return null;
+
+  const [row] = await getDb()
+    .select({
+      encrypted: users[cols.encrypted],
+      iv: users[cols.iv],
+    })
+    .from(users)
+    .where(eq(users.id, userId));
+
+  if (!row?.encrypted || !row?.iv) return null;
+
+  return decryptV0ApiKey({
+    encrypted: row.encrypted,
+    iv: row.iv,
+  });
+}
+
 /** Creates a mapping between a v0 chat ID and a user ID. */
 export async function createChatOwnership({
   v0ChatId,

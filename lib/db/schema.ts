@@ -8,6 +8,13 @@ export const users = pgTable("users", {
   v0_api_key_encrypted: varchar("v0_api_key_encrypted", { length: 512 }),
   v0_api_key_iv: varchar("v0_api_key_iv", { length: 64 }),
   v0_api_key_updated_at: timestamp("v0_api_key_updated_at"),
+  // BYOK provider keys (encrypted)
+  openai_key_encrypted: varchar("openai_key_encrypted", { length: 512 }),
+  openai_key_iv: varchar("openai_key_iv", { length: 64 }),
+  anthropic_key_encrypted: varchar("anthropic_key_encrypted", { length: 512 }),
+  anthropic_key_iv: varchar("anthropic_key_iv", { length: 64 }),
+  google_key_encrypted: varchar("google_key_encrypted", { length: 512 }),
+  google_key_iv: varchar("google_key_iv", { length: 64 }),
   created_at: timestamp("created_at").notNull().defaultNow(),
 });
 

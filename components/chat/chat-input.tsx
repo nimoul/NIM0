@@ -16,6 +16,7 @@ import {
   savePromptToStorage,
 } from "@/components/ai-elements/prompt-input";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
+import { ChatModeToolbar } from "@/components/chat/chat-mode-toolbar";
 
 interface ChatInputProps {
   message: string;
@@ -122,6 +123,9 @@ export function ChatInput({
 
   return (
     <div className="p-4 pt-0">
+      <div className="mx-auto mb-2 max-w-2xl">
+        <ChatModeToolbar disabled={isLoading} />
+      </div>
       <div className="flex gap-2">
         <PromptInput
           onSubmit={handleSubmit}
