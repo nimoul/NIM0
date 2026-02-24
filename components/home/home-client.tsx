@@ -1,11 +1,10 @@
 "use client";
 
-import type { MessageBinaryFormat } from "@v0-sdk/react";
-import { StreamingMessage } from "@v0-sdk/react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   clearPromptFromStorage,
   createImageAttachment,
@@ -28,9 +27,7 @@ import { ChatMessages } from "@/components/chat/chat-messages";
 import { PreviewPanel } from "@/components/chat/preview-panel";
 import { AppHeader } from "@/components/shared/app-header";
 import { ResizableLayout } from "@/components/shared/resizable-layout";
-import { useV0ApiKeyModal } from "@/contexts/v0-api-key-modal-context";
-import { V0_API_KEY_REQUIRED_CODE } from "@/lib/v0-key";
-import type { ChatData } from "@/types/chat";
+import { useChat } from "@/hooks/use-chat";
 
 // Component that uses useSearchParams - needs to be wrapped in Suspense
 function SearchParamsHandler({ onReset }: { onReset: () => void }) {
@@ -53,53 +50,36 @@ function SearchParamsHandler({ onReset }: { onReset: () => void }) {
 }
 
 export function HomeClient() {
-  const { status } = useSession();
+  const { status: sessionStatus } = useSession();
   const router = useRouter();
-  const { openKeyModal, requireV0ApiKey } = useV0ApiKeyModal();
-  const [message, setMessage] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [inputValue, setInputValue] = useState("");
   const [showChatInterface, setShowChatInterface] = useState(false);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [chatHistory, setChatHistory] = useState<
-    Array<{
-      type: "user" | "assistant";
-      content: string | MessageBinaryFormat;
-      isStreaming?: boolean;
-      stream?: ReadableStream<Uint8Array> | null;
-    }>
-  >([]);
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [currentChat, setCurrentChat] = useState<{
-    id: string;
-    demo?: string;
-  } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleReset = () => {
-    // Reset all chat-related state
+  const { messages, sendMessage, status, setMessages } = useChat();
+
+  const isLoading = status === "streaming" || status === "submitted";
+
+  const handleReset = useCallback(() => {
     setShowChatInterface(false);
-    setChatHistory([]);
-    setCurrentChatId(null);
-    setCurrentChat(null);
-    setMessage("");
+    setInputValue("");
     setAttachments([]);
-    setIsLoading(false);
     setIsFullscreen(false);
     setRefreshKey((prev) => prev + 1);
+    setMessages([]);
 
-    // Clear any stored data
     clearPromptFromStorage();
 
-    // Focus textarea after reset
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
       }
     }, 0);
-  };
+  }, [setMessages]);
 
   // Auto-focus the textarea on page load and restore from sessionStorage
   useEffect(() => {
@@ -107,10 +87,9 @@ export function HomeClient() {
       textareaRef.current.focus();
     }
 
-    // Restore prompt data from sessionStorage
     const storedData = loadPromptFromStorage();
     if (storedData) {
-      setMessage(storedData.message);
+      setInputValue(storedData.message);
       if (storedData.attachments.length > 0) {
         const restoredAttachments = storedData.attachments.map(
           createImageAttachmentFromStored,
@@ -122,13 +101,12 @@ export function HomeClient() {
 
   // Save prompt data to sessionStorage whenever message or attachments change
   useEffect(() => {
-    if (message.trim() || attachments.length > 0) {
-      savePromptToStorage(message, attachments);
+    if (inputValue.trim() || attachments.length > 0) {
+      savePromptToStorage(inputValue, attachments);
     } else {
-      // Clear sessionStorage if both message and attachments are empty
       clearPromptFromStorage();
     }
-  }, [message, attachments]);
+  }, [inputValue, attachments]);
 
   // Image attachment handlers
   const handleImageFiles = async (files: File[]) => {
@@ -146,334 +124,40 @@ export function HomeClient() {
     setAttachments((prev) => prev.filter((att) => att.id !== id));
   };
 
-  const handleDragOver = () => {
-    setIsDragOver(true);
-  };
+  const handleDragOver = () => setIsDragOver(true);
+  const handleDragLeave = () => setIsDragOver(false);
+  const handleDrop = () => setIsDragOver(false);
 
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
+  const handleSendMessage = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!inputValue.trim() || isLoading) return;
 
-  const handleDrop = () => {
-    setIsDragOver(false);
-  };
-
-  const getErrorPayload = async (response: Response) => {
-    let errorMessage =
-      "Sorry, there was an error processing your message. Please try again.";
-    let code: string | undefined;
-
-    try {
-      const errorData = await response.json();
-      code = errorData.code;
-
-      if (errorData.message) {
-        errorMessage = errorData.message;
-      } else if (errorData.error) {
-        errorMessage = errorData.error;
-      } else if (response.status === 429) {
-        errorMessage =
-          "You have exceeded your maximum number of messages for the day. Please try again later.";
-      }
-    } catch (parseError) {
-      console.error("Error parsing error response:", parseError);
-      if (response.status === 429) {
-        errorMessage =
-          "You have exceeded your maximum number of messages for the day. Please try again later.";
-      }
-    }
-    return { message: errorMessage, code };
-  };
-
-  const getStreamingBodyOrThrow = async (
-    response: Response,
-    onMissingKey: () => void,
-  ): Promise<ReadableStream<Uint8Array>> => {
-    if (!response.ok) {
-      const errorPayload = await getErrorPayload(response);
-
-      if (errorPayload.code === V0_API_KEY_REQUIRED_CODE) {
-        onMissingKey();
-        throw new Error("missing_v0_key_handled");
-      }
-
-      throw new Error(errorPayload.message);
-    }
-
-    if (!response.body) {
-      throw new Error("No response body for streaming");
-    }
-
-    return response.body;
-  };
-
-  const ensureAuthenticatedAndKey = async () => {
-    if (status !== "authenticated") {
+    if (sessionStatus !== "authenticated") {
       router.push("/login?callbackUrl=/");
-      return false;
-    }
-
-    return requireV0ApiKey();
-  };
-
-  const handleSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!message.trim() || isLoading) {
       return;
     }
 
-    const canSend = await ensureAuthenticatedAndKey();
-    if (!canSend) {
-      return;
-    }
-
-    const userMessage = message.trim();
-    const currentAttachments = [...attachments];
-
-    // Clear sessionStorage immediately upon submission
+    const userMessage = inputValue.trim();
     clearPromptFromStorage();
-
-    setMessage("");
+    setInputValue("");
     setAttachments([]);
-
-    // Immediately show chat interface and add user message
     setShowChatInterface(true);
-    setChatHistory([
-      {
-        type: "user",
-        content: userMessage,
-      },
-    ]);
-    setIsLoading(true);
 
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          streaming: true,
-          attachments: currentAttachments.map((att) => ({ url: att.dataUrl })),
-        }),
-      });
-
-      const streamBody = await getStreamingBodyOrThrow(response, () => {
-        openKeyModal();
-        setIsLoading(false);
-        setShowChatInterface(false);
-        setChatHistory([]);
-        setMessage(userMessage);
-        setAttachments(currentAttachments);
-      });
-
-      setIsLoading(false);
-
-      // Add streaming assistant response
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          type: "assistant",
-          content: [],
-          isStreaming: true,
-          stream: streamBody,
-        },
-      ]);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "missing_v0_key_handled"
-      ) {
-        return;
-      }
-
-      console.error("Error creating chat:", error);
-      setIsLoading(false);
-
-      // Use the specific error message if available, otherwise fall back to generic message
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : "Sorry, there was an error processing your message. Please try again.";
-
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          type: "assistant",
-          content: errorMessage,
-        },
-      ]);
-    }
+    sendMessage({ text: userMessage });
   };
 
-  const handleChatData = async (chatData: ChatData) => {
-    if (chatData.id) {
-      // Only set currentChat if it's not already set or if this is the main chat object
-      if (!currentChatId || chatData.object === "chat") {
-        setCurrentChatId(chatData.id);
-        setCurrentChat({ id: chatData.id });
-
-        // Update URL without triggering Next.js routing
-        window.history.pushState(null, "", `/chats/${chatData.id}`);
-      }
-
-      // Create ownership record for new chat (only if this is a new chat)
-      if (!currentChatId) {
-        try {
-          await fetch("/api/chat/ownership", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              chatId: chatData.id,
-            }),
-          });
-        } catch (error) {
-          console.error("Failed to create chat ownership:", error);
-          // Don't fail the UI if ownership creation fails
-        }
-      }
-    }
-  };
-
-  const handleStreamingComplete = async (
-    finalContent: string | MessageBinaryFormat,
-  ) => {
-    setIsLoading(false);
-
-    // Update chat history with final content
-    setChatHistory((prev) => {
-      const updated = [...prev];
-      const lastIndex = updated.length - 1;
-      if (lastIndex >= 0 && updated[lastIndex].isStreaming) {
-        updated[lastIndex] = {
-          ...updated[lastIndex],
-          content: finalContent,
-          isStreaming: false,
-          stream: undefined,
-        };
-      }
-      return updated;
-    });
-
-    // Fetch demo URL after streaming completes
-    // Use the current state by accessing it in the state updater
-    setCurrentChat((prevCurrentChat) => {
-      if (prevCurrentChat?.id) {
-        // Fetch demo URL asynchronously
-        fetch(`/api/chats/${prevCurrentChat.id}`)
-          .then((response) => {
-            if (response.ok) {
-              return response.json();
-            }
-            console.warn("Failed to fetch chat details:", response.status);
-            return null;
-          })
-          .then((chatDetails) => {
-            if (chatDetails) {
-              const demoUrl =
-                chatDetails?.latestVersion?.demoUrl || chatDetails?.demo;
-
-              // Update the current chat with demo URL
-              if (demoUrl) {
-                setCurrentChat((prev) =>
-                  prev ? { ...prev, demo: demoUrl } : null,
-                );
-              }
-            }
-          })
-          .catch((error) => {
-            console.error("Error fetching demo URL:", error);
-          });
-      }
-
-      // Return the current state unchanged for now
-      return prevCurrentChat;
-    });
-  };
-
-  const handleChatSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleChatSendMessage = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!message.trim() || isLoading || !currentChatId) {
-      return;
-    }
+    if (!inputValue.trim() || isLoading) return;
 
-    const canSend = await ensureAuthenticatedAndKey();
-    if (!canSend) {
-      return;
-    }
-
-    const userMessage = message.trim();
-    setMessage("");
-    setIsLoading(true);
-
-    // Add user message to chat history
-    setChatHistory((prev) => [...prev, { type: "user", content: userMessage }]);
-
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          chatId: currentChatId,
-          streaming: true,
-        }),
-      });
-
-      const streamBody = await getStreamingBodyOrThrow(response, () => {
-        openKeyModal();
-        setIsLoading(false);
-        setMessage(userMessage);
-      });
-
-      setIsLoading(false);
-
-      // Add streaming response
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          type: "assistant",
-          content: [],
-          isStreaming: true,
-          stream: streamBody,
-        },
-      ]);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "missing_v0_key_handled"
-      ) {
-        return;
-      }
-
-      console.error("Error:", error);
-
-      // Use the specific error message if available, otherwise fall back to generic message
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : "Sorry, there was an error processing your message. Please try again.";
-
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          type: "assistant",
-          content: errorMessage,
-        },
-      ]);
-      setIsLoading(false);
-    }
+    const userMessage = inputValue.trim();
+    setInputValue("");
+    sendMessage({ text: userMessage });
   };
 
   if (showChatInterface) {
     return (
       <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-black">
-        {/* Handle search params with Suspense boundary */}
         <Suspense fallback={null}>
           <SearchParamsHandler onReset={handleReset} />
         </Suspense>
@@ -485,16 +169,13 @@ export function HomeClient() {
           leftPanel={
             <>
               <ChatMessages
-                chatHistory={chatHistory}
+                messages={messages}
                 isLoading={isLoading}
-                onStreamingComplete={handleStreamingComplete}
-                onChatData={handleChatData}
-                onStreamingStarted={() => setIsLoading(false)}
               />
 
               <ChatInput
-                message={message}
-                setMessage={setMessage}
+                message={inputValue}
+                setMessage={setInputValue}
                 onSubmit={handleChatSendMessage}
                 isLoading={isLoading}
                 showSuggestions={false}
@@ -503,7 +184,7 @@ export function HomeClient() {
           }
           rightPanel={
             <PreviewPanel
-              currentChat={currentChat}
+              currentChat={null}
               isFullscreen={isFullscreen}
               setIsFullscreen={setIsFullscreen}
               refreshKey={refreshKey}
@@ -511,34 +192,12 @@ export function HomeClient() {
             />
           }
         />
-
-        {/* Hidden streaming component for initial response */}
-        {chatHistory.some((msg) => msg.isStreaming && msg.stream) && (
-          <div className="hidden">
-            {chatHistory.map((msg, index) =>
-              msg.isStreaming && msg.stream ? (
-                <StreamingMessage
-                  key={`streaming-${msg.type}-${index}`}
-                  stream={msg.stream}
-                  messageId={`msg-${index}`}
-                  onComplete={handleStreamingComplete}
-                  onChatData={handleChatData}
-                  onError={(error) => {
-                    console.error("Streaming error:", error);
-                    setIsLoading(false);
-                  }}
-                />
-              ) : null,
-            )}
-          </div>
-        )}
       </div>
     );
   }
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-black">
-      {/* Handle search params with Suspense boundary */}
       <Suspense fallback={null}>
         <SearchParamsHandler onReset={handleReset} />
       </Suspense>
@@ -571,8 +230,8 @@ export function HomeClient() {
               />
               <PromptInputTextarea
                 ref={textareaRef}
-                onChange={(e) => setMessage(e.target.value)}
-                value={message}
+                onChange={(e) => setInputValue(e.target.value)}
+                value={inputValue}
                 placeholder="Describe what you want to build..."
                 className="min-h-20 text-base"
                 disabled={isLoading}
@@ -587,7 +246,7 @@ export function HomeClient() {
                 <PromptInputTools>
                   <PromptInputMicButton
                     onTranscript={(transcript) => {
-                      setMessage(
+                      setInputValue(
                         (prev) => prev + (prev ? " " : "") + transcript,
                       );
                     }}
@@ -597,7 +256,7 @@ export function HomeClient() {
                     disabled={isLoading}
                   />
                   <PromptInputSubmit
-                    disabled={!message.trim() || isLoading}
+                    disabled={!inputValue.trim() || isLoading}
                     status={isLoading ? "streaming" : "ready"}
                   />
                 </PromptInputTools>
@@ -610,104 +269,80 @@ export function HomeClient() {
             <Suggestions>
               <Suggestion
                 onClick={() => {
-                  setMessage("Landing page");
-                  // Submit after setting message
+                  setInputValue("Landing page");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Landing page"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Todo app");
-                  // Submit after setting message
+                  setInputValue("Todo app");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Todo app"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Dashboard");
-                  // Submit after setting message
+                  setInputValue("Dashboard");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Dashboard"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Blog");
-                  // Submit after setting message
+                  setInputValue("Blog");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Blog"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("E-commerce");
-                  // Submit after setting message
+                  setInputValue("E-commerce");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="E-commerce"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Portfolio");
-                  // Submit after setting message
+                  setInputValue("Portfolio");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Portfolio"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Chat app");
-                  // Submit after setting message
+                  setInputValue("Chat app");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Chat app"
               />
               <Suggestion
                 onClick={() => {
-                  setMessage("Calculator");
-                  // Submit after setting message
+                  setInputValue("Calculator");
                   setTimeout(() => {
                     const form = textareaRef.current?.form;
-                    if (form) {
-                      form.requestSubmit();
-                    }
+                    if (form) form.requestSubmit();
                   }, 0);
                 }}
                 suggestion="Calculator"
@@ -720,10 +355,10 @@ export function HomeClient() {
             <p>
               Powered by{" "}
               <Link
-                href="https://v0-sdk.dev"
+                href="https://sdk.vercel.ai"
                 className="text-foreground hover:underline"
               >
-                v0 SDK
+                Vercel AI SDK
               </Link>
             </p>
           </div>

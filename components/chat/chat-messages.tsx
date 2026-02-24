@@ -1,53 +1,18 @@
-import { type MessageBinaryFormat, StreamingMessage } from "@v0-sdk/react";
-import { useEffect, useRef } from "react";
+import type { UIMessage } from "ai";
 import {
   Conversation,
   ConversationContent,
 } from "@/components/ai-elements/conversation";
 import { Loader } from "@/components/ai-elements/loader";
 import { Message } from "@/components/ai-elements/message";
-import { MessageRenderer } from "@/components/message-renderer";
-import { sharedComponents } from "@/components/shared-components";
-
-interface ChatMessage {
-  type: "user" | "assistant";
-  content: string | MessageBinaryFormat;
-  isStreaming?: boolean;
-  stream?: ReadableStream<Uint8Array> | null;
-}
-
-interface Chat {
-  id: string;
-  demo?: string;
-  url?: string;
-}
 
 interface ChatMessagesProps {
-  chatHistory: ChatMessage[];
+  messages: UIMessage[];
   isLoading: boolean;
-  currentChat: Chat | null;
-  onStreamingComplete: (finalContent: string | MessageBinaryFormat) => void;
-  onChatData: (chatData: { id: string; demo?: string; url?: string }) => void;
-  onStreamingStarted?: () => void;
 }
 
-export function ChatMessages({
-  chatHistory,
-  isLoading,
-  onStreamingComplete,
-  onChatData,
-  onStreamingStarted,
-}: Omit<ChatMessagesProps, "currentChat">) {
-  const streamingStartedRef = useRef(false);
-
-  // Reset the streaming started flag when a new message starts loading
-  useEffect(() => {
-    if (isLoading) {
-      streamingStartedRef.current = false;
-    }
-  }, [isLoading]);
-
-  if (chatHistory.length === 0) {
+export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
+  if (messages.length === 0) {
     return (
       <Conversation>
         <ConversationContent>
@@ -62,33 +27,21 @@ export function ChatMessages({
   return (
     <Conversation>
       <ConversationContent>
-        {chatHistory.map((msg, index) => (
-          <Message from={msg.type} key={`message-${index}-${msg.type}`}>
-            {msg.isStreaming && msg.stream ? (
-              <StreamingMessage
-                stream={msg.stream}
-                messageId={`msg-${index}`}
-                role={msg.type}
-                onComplete={onStreamingComplete}
-                onChatData={onChatData}
-                onChunk={(_chunk) => {
-                  // Hide external loader once we start receiving content (only once)
-                  if (onStreamingStarted && !streamingStartedRef.current) {
-                    streamingStartedRef.current = true;
-                    onStreamingStarted();
-                  }
-                }}
-                onError={(error) => console.error("Streaming error:", error)}
-                components={sharedComponents}
-                showLoadingIndicator={false}
-              />
-            ) : (
-              <MessageRenderer
-                content={msg.content}
-                role={msg.type}
-                messageId={`msg-${index}`}
-              />
-            )}
+        {messages.map((msg) => (
+          <Message from={msg.role} key={msg.id}>
+            {msg.parts.map((part, partIndex) => {
+              if (part.type === "text") {
+                return (
+                  <div
+                    key={`${msg.id}-${partIndex}`}
+                    className="prose prose-gray dark:prose-invert max-w-none whitespace-pre-wrap text-gray-700 leading-relaxed dark:text-gray-200"
+                  >
+                    {part.text}
+                  </div>
+                );
+              }
+              return null;
+            })}
           </Message>
         ))}
         {isLoading && (

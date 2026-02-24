@@ -22,30 +22,25 @@ export function ChatDetailClient() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [inputValue, setInputValue] = useState("");
 
-  const {
-    message,
-    setMessage,
-    currentChat,
-    isLoading,
-    setIsLoading,
-    chatHistory,
-    isLoadingChat,
-    handleSendMessage,
-    handleStreamingComplete,
-    handleChatData,
-  } = useChat(chatId);
+  const { messages, sendMessage, status } = useChat();
 
-  // Wrapper function to handle attachments
+  const isLoading = status === "streaming" || status === "submitted";
+
+  // Wrapper function to handle form submit
   const handleSubmitWithAttachments = (
     e: React.FormEvent<HTMLFormElement>,
-    attachmentUrls?: Array<{ url: string }>,
+    _attachmentUrls?: Array<{ url: string }>,
   ) => {
-    // Clear sessionStorage immediately upon submission
+    e.preventDefault();
+    if (!inputValue.trim() || isLoading) return;
+
     clearPromptFromStorage();
-    // Clear attachments after sending
     setAttachments([]);
-    return handleSendMessage(e, attachmentUrls);
+
+    sendMessage({ text: inputValue });
+    setInputValue("");
   };
 
   // Handle fullscreen keyboard shortcuts
@@ -57,10 +52,10 @@ export function ChatDetailClient() {
 
   // Auto-focus the textarea on page load
   useEffect(() => {
-    if (textareaRef.current && !isLoadingChat) {
+    if (textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [isLoadingChat]);
+  }, []);
 
   return (
     <div
@@ -76,16 +71,13 @@ export function ChatDetailClient() {
         leftPanel={
           <>
             <ChatMessages
-              chatHistory={chatHistory}
+              messages={messages}
               isLoading={isLoading}
-              onStreamingComplete={handleStreamingComplete}
-              onChatData={handleChatData}
-              onStreamingStarted={() => setIsLoading(false)}
             />
 
             <ChatInput
-              message={message}
-              setMessage={setMessage}
+              message={inputValue}
+              setMessage={setInputValue}
               onSubmit={handleSubmitWithAttachments}
               isLoading={isLoading}
               showSuggestions={false}
@@ -97,7 +89,7 @@ export function ChatDetailClient() {
         }
         rightPanel={
           <PreviewPanel
-            currentChat={currentChat || null}
+            currentChat={{ id: chatId }}
             isFullscreen={isFullscreen}
             setIsFullscreen={setIsFullscreen}
             refreshKey={refreshKey}
